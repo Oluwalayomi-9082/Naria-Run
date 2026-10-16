@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Naira Run</title>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&family=Figtree:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/* ===== Central style tokens. The 3D character reads --char-* from here. ===== */
+:root{
+  --char-skin:#8d5524; --char-top:#1f8a5b; --char-bottom:#243b6b; --char-accent:#f2b705;
+  --bg:#14211c; --panel:#f3efe6; --ink:#14211c; --muted:#5b665f; --btn:#f2b705; --btn-ink:#14211c;
+  --font-head:'Unbounded',system-ui,sans-serif; --font-body:'Figtree',system-ui,sans-serif;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--panel:#1d2a24;--ink:#f3efe6;--muted:#a3b0a8;}}
+:root[data-theme="dark"]{--panel:#1d2a24;--ink:#f3efe6;--muted:#a3b0a8;}
+html,body{height:100%;margin:0;background:var(--bg);font-family:var(--font-body);overflow:hidden}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#hud{position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);display:flex;justify-content:space-between;align-items:center;padding:12px 16px;color:#fff;font-family:var(--font-head);font-size:14px;pointer-events:none;text-shadow:0 1px 6px #0008}
+#who{display:flex;align-items:center;gap:10px}
+#av{width:34px;height:34px;border-radius:50%;background:var(--char-top);border:3px solid var(--char-accent);background-size:cover;display:grid;place-items:center;font-size:14px}
+#stats{text-align:right;line-height:1.5}
+#panel{position:fixed;inset:0;display:grid;place-items:center;padding:16px;background:#0008}
+#card{background:var(--panel);color:var(--ink);border-radius:18px;padding:24px;width:min(420px,100%);max-height:100%;overflow:auto;box-sizing:border-box}
+h1{font-family:var(--font-head);font-weight:800;font-size:28px;margin:0 0 4px}
+p{margin:6px 0;color:var(--muted);line-height:1.45}
+button{font:600 16px var(--font-body);background:var(--btn);color:var(--btn-ink);border:0;border-radius:12px;padding:12px 20px;cursor:pointer;margin-top:12px;width:100%}
+button:focus-visible,input:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.row{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-top:10px;font-size:14px;color:var(--ink)}
+input[type=color]{width:44px;height:30px;border:0;padding:0;background:none}
+ol{padding-left:20px;margin:6px 0;color:var(--ink);font-size:14px}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+<div id="hud"><div id="who"><div id="av"></div><span id="uname">Guest</span></div><div id="stats"><div id="score">0 m</div><div id="coins">₦0</div><div id="lives">♥♥♥</div></div></div>
+<div id="panel"><div id="card">
+  <h1>Naira Run</h1>
+  <p id="hello">Dodge the crates, grab the naira. Arrow keys / A D to switch lanes, Space or Up to jump. On touch: tap left or right, swipe up to jump.</p>
+  <div class="row"><span>Shirt</span><input type="color" id="c-top" value="#1f8a5b"></div>
+  <div class="row"><span>Trousers</span><input type="color" id="c-bottom" value="#243b6b"></div>
+  <div class="row"><span>Cap</span><input type="color" id="c-accent" value="#f2b705"></div>
+  <button id="go">Start running</button>
+  <p style="margin-top:16px"><b style="color:var(--ink)">Top runs on this device</b></p>
+  <ol id="board"></ol>
+</div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ===== start.ng user adapter =====
+   Resolution order: window.START_NG_USER (injected by the platform) -> postMessage
+   {type:'startng:user', user:{id,name,avatar}} -> ?user=&avatar= -> guest.
+   Style changes: postMessage {type:'startng:style', vars:{'--char-top':'#...'}} or edit :root CSS vars. */
+let user={id:'guest',name:'Guest',avatar:''};
+function setUser(u){ if(!u) return; user={id:String(u.id||u.name||'guest'),name:u.name||u.username||'Guest',avatar:u.avatar||u.picture||''};
+  document.getElementById('uname').textContent=user.name;
+  const av=document.getElementById('av'); av.textContent=user.avatar?'':user.name.charAt(0).toUpperCase(); av.style.backgroundImage=user.avatar&&/^(https:|data:)/.test(user.avatar)?`url(${user.avatar})`:'';
+  document.getElementById('hello').textContent=`Welcome, ${user.name}. Dodge the crates, grab the naira. Arrows / A D to switch lanes, Space to jump. On touch: tap left or right, swipe up to jump.`; renderBoard(); }
+const q=new URLSearchParams(location.search);
+setUser(window.START_NG_USER||(q.get('user')?{name:q.get('user'),avatar:q.get('avatar')}:null));
+addEventListener('message',e=>{const d=e.data||{};
+  if(d.type==='startng:user') setUser(d.user);
+  if(d.type==='startng:style'&&d.vars) for(const k in d.vars) if(/^--[\w-]+$/.test(k)) document.documentElement.style.setProperty(k,String(d.vars[k]));
+});
+
+/* ===== scores (per-device, keyed by user) ===== */
+function loadScores(){try{return JSON.parse(localStorage.getItem('naira-run-scores')||'[]')}catch(e){return []}}
+function saveScore(s){try{const a=loadScores();a.push({n:user.name,s});a.sort((x,y)=>y.s-x.s);localStorage.setItem('naira-run-scores',JSON.stringify(a.slice(0,5)))}catch(e){}}
+function renderBoard(){const b=document.getElementById('board');b.innerHTML='';const a=loadScores();if(!a.length){b.innerHTML='<li>No runs yet</li>';return}
+  a.forEach(r=>{const li=document.createElement('li');li.textContent=`${r.n}: ${r.s}`;b.appendChild(li)})}
+renderBoard();
+
+/* ===== three.js scene ===== */
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.insertBefore(renderer.domElement,document.body.firstChild);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0xe9a35b);scene.fog=new THREE.Fog(0xe9a35b,25,70);
+const cam=new THREE.PerspectiveCamera(60,1,0.1,200);cam.position.set(0,4.2,7);cam.lookAt(0,1,-5);
+scene.add(new THREE.HemisphereLight(0xfff1d6,0x3a4a3a,0.95));
+const sun=new THREE.DirectionalLight(0xffffff,0.8);sun.position.set(4,10,6);scene.add(sun);
+function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();
+
+const road=new THREE.Mesh(new THREE.PlaneGeometry(7,200),new THREE.MeshLambertMaterial({color:0x3b3f4a}));
+road.rotation.x=-Math.PI/2;road.position.z=-80;scene.add(road);
+const verge=new THREE.Mesh(new THREE.PlaneGeometry(60,200),new THREE.MeshLambertMaterial({color:0x4d6b3f}));
+verge.rotation.x=-Math.PI/2;verge.position.set(0,-0.02,-80);scene.add(verge);
+const dashes=[];const dashMat=new THREE.MeshBasicMaterial({color:0xf3efe6});
+for(let i=0;i<16;i++)for(const x of[-1,1]){const d=new THREE.Mesh(new THREE.PlaneGeometry(0.12,2),dashMat);d.rotation.x=-Math.PI/2;d.position.set(x,0.01,-i*6);scene.add(d);dashes.push(d)}
+const poles=[];const poleMat=new THREE.MeshLambertMaterial({color:0x8a6a3b}),leafMat=new THREE.MeshLambertMaterial({color:0x2f7d45});
+for(let i=0;i<14;i++)for(const s of[-1,1]){const g=new THREE.Group();
+  const t=new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.2,3,6),poleMat);t.position.y=1.5;
+  const l=new THREE.Mesh(new THREE.ConeGeometry(1,1.8,6),leafMat);l.position.y=3.6;g.add(t,l);g.position.set(s*(5+Math.random()*3),0,-i*8);scene.add(g);poles.push(g)}
+
+/* ===== character: colors come from CSS custom properties ===== */
+const mats={skin:new THREE.MeshLambertMaterial(),top:new THREE.MeshLambertMaterial(),bottom:new THREE.MeshLambertMaterial(),accent:new THREE.MeshLambertMaterial()};
+function css(n,f){return(getComputedStyle(document.documentElement).getPropertyValue(n)||f).trim()||f}
+function applyStyle(){for(const [k,v] of [['skin','#8d5524'],['top','#1f8a5b'],['bottom','#243b6b'],['accent','#f2b705']]){
+    try{mats[k].color.set(css('--char-'+k,v))}catch(e){mats[k].color.set(v)}}
+  const av=document.getElementById('av');
+  for(const [id,k] of [['c-top','top'],['c-bottom','bottom'],['c-accent','accent']]){const el=document.getElementById(id);const c=css('--char-'+k,'');if(/^#[0-9a-f]{6}$/i.test(c))el.value=c}}
+new MutationObserver(applyStyle).observe(document.documentElement,{attributes:true,attributeFilter:['style','class','data-theme']});
+for(const [id,k] of [['c-top','top'],['c-bottom','bottom'],['c-accent','accent']])
+  document.getElementById(id).addEventListener('input',e=>document.documentElement.style.setProperty('--char-'+k,e.target.value));
+const box=(w,h,d,m,x,y,z)=>{const b=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);b.position.set(x,y,z);return b};
+const hero=new THREE.Group();
+const torso=box(0.7,0.8,0.4,mats.top,0,1.5,0);
+const head=box(0.5,0.5,0.5,mats.skin,0,2.2,0), cap=box(0.56,0.16,0.56,mats.accent,0,2.5,0), brim=box(0.5,0.06,0.3,mats.accent,0,2.42,0.4);
+const legL=new THREE.Group(),legR=new THREE.Group(),armL=new THREE.Group(),armR=new THREE.Group();
+legL.add(box(0.28,0.8,0.3,mats.bottom,0,-0.4,0));legR.add(box(0.28,0.8,0.3,mats.bottom,0,-0.4,0));
+armL.add(box(0.2,0.7,0.24,mats.skin,0,-0.35,0));armR.add(box(0.2,0.7,0.24,mats.skin,0,-0.35,0));
+legL.position.set(-0.2,1.1,0);legR.position.set(0.2,1.1,0);armL.position.set(-0.48,1.85,0);armR.position.set(0.48,1.85,0);
+hero.add(torso,head,cap,brim,legL,legR,armL,armR);scene.add(hero);applyStyle();
+
+/* ===== game state ===== */
+const LANES=[-2,0,2];let lane=1,tx=0,vy=0,py=0,items=[],speed=0,dist=0,coins=0,lives=3,running=false,t=0,spawnT=0,inv=0;
+const crateGeo=new THREE.BoxGeometry(1.5,1.3,1.5),crateMat=new THREE.MeshLambertMaterial({color:0xb8412f}),
+  coinGeo=new THREE.CylinderGeometry(0.4,0.4,0.12,16),coinMat=new THREE.MeshLambertMaterial({color:0xf2b705,emissive:0x6b4d00});
+function spawn(){const l=Math.floor(Math.random()*3),z=-70;
+  if(Math.random()<0.45){const m=new THREE.Mesh(crateGeo,crateMat);m.position.set(LANES[l],0.65,z);m.userData.k='crate';scene.add(m);items.push(m)}
+  else{for(let i=0;i<4;i++){const m=new THREE.Mesh(coinGeo,coinMat);m.rotation.z=Math.PI/2;m.position.set(LANES[l],1,z-i*2.2);m.userData.k='coin';scene.add(m);items.push(m)}}}
+function move(d){if(!running)return;lane=Math.max(0,Math.min(2,lane+d))}
+function jump(){if(running&&py<=0.001)vy=9}
+addEventListener('keydown',e=>{if(e.code==='ArrowLeft'||e.code==='KeyA')move(-1);if(e.code==='ArrowRight'||e.code==='KeyD')move(1);
+  if(['ArrowUp','Space','KeyW'].includes(e.code)){jump();e.preventDefault()}});
+let sy=null;renderer.domElement.addEventListener('pointerdown',e=>{sy=e.clientY;});
+renderer.domElement.addEventListener('pointerup',e=>{if(sy!==null&&sy-e.clientY>40)jump();else move(e.clientX<innerWidth/2?-1:1);sy=null});
+
+function hud(){document.getElementById('score').textContent=Math.floor(dist)+' m';document.getElementById('coins').textContent='₦'+coins*10;document.getElementById('lives').textContent='♥'.repeat(Math.max(lives,0))}
+function start(){items.forEach(i=>scene.remove(i));items=[];lane=1;py=0;vy=0;speed=14;dist=0;coins=0;lives=3;spawnT=0;inv=0;running=true;
+  document.getElementById('panel').classList.add('hide');hud()}
+function end(){running=false;const s=Math.floor(dist)+coins*10;saveScore(s);renderBoard();
+  document.querySelector('#card h1').textContent='Run over';document.getElementById('hello').textContent=`${user.name}, you scored ${s}: ${Math.floor(dist)} m plus ₦${coins*10}.`;
+  document.getElementById('go').textContent='Run again';document.getElementById('panel').classList.remove('hide');document.getElementById('go').focus()}
+document.getElementById('go').addEventListener('click',start);
+
+let last=performance.now();
+function loop(now){requestAnimationFrame(loop);const dt=Math.min((now-last)/1000,0.05);last=now;t+=dt;
+  if(running){speed+=dt*0.25;dist+=speed*dt;spawnT-=dt;if(spawnT<=0){spawn();spawnT=Math.max(0.45,1.3-speed/40)*(0.8+Math.random()*0.6)}
+    inv=Math.max(0,inv-dt);vy-=24*dt;py=Math.max(0,py+vy*dt);if(py===0&&vy<0)vy=0;
+    for(let i=items.length-1;i>=0;i--){const m=items[i];m.position.z+=speed*dt;if(m.userData.k==='coin')m.rotation.y+=dt*4;
+      const dz=Math.abs(m.position.z),dx=Math.abs(m.position.x-hero.position.x);
+      if(dz<0.9&&dx<1){
+        if(m.userData.k==='coin'&&py<2){coins++;scene.remove(m);items.splice(i,1);hud();continue}
+        if(m.userData.k==='crate'&&py<1.1&&inv<=0){lives--;inv=1.2;hud();if(lives<=0){end()}}}
+      if(m.position.z>10){scene.remove(m);items.splice(i,1)}}
+    hud()}
+  tx=LANES[lane];hero.position.x+=(tx-hero.position.x)*Math.min(1,dt*14);hero.position.y=py;
+  const sw=running?Math.sin(t*speed*0.9)*0.9:0;legL.rotation.x=sw;legR.rotation.x=-sw;armL.rotation.x=-sw;armR.rotation.x=sw;
+  hero.rotation.z=(hero.position.x-tx)*0.15;hero.visible=inv<=0||Math.floor(t*20)%2===0;
+  const sp=running?speed:3;dashes.forEach(d=>{d.position.z+=sp*dt;if(d.position.z>6)d.position.z-=96});
+  poles.forEach(p=>{p.position.z+=sp*dt;if(p.position.z>8)p.position.z-=112});
+  renderer.render(scene,cam)}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
